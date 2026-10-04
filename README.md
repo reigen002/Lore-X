@@ -1,10 +1,10 @@
-# 🎮 RPG Gaming Assistant - Embeddable Game Sidebar
+# Lore-X :Gaming Assistant - Embeddable Game Sidebar
 
 **An intelligent, embeddable game sidebar powered by RAG, Web Search, and Smart LLM Fallback.**
 
 The **RPG Gaming Assistant** is a full-stack application with a resizable, toggleable sidebar UI that works in-game. It answers game-related questions using a hybrid approach: cached knowledge (ChromaDB), web search (Serper API + DuckDuckGo), and AI synthesis (Groq), with intelligent fallback when API rate limits are reached.
 
-## ✨ Key Features
+## Key Features
 
 *   **🎮 Embeddable Sidebar Widget**: Resizable, toggleable right-side panel with gaming aesthetic - works in any browser or game overlay.
 *   **💬 Persistent Conversations**: Chat history stored per-game with SQLite, survives restarts and sessions.
