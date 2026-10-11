@@ -1,11 +1,12 @@
 from datetime import datetime
+from typing import Annotated
 import logging
 import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, StringConstraints
 
 from rpgagents.conversation_store import ConversationStore
 from rpgagents.main import quick_search
@@ -29,10 +30,20 @@ app.add_middleware(
 )
 
 conversation_store = ConversationStore()
+RequiredText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+@app.exception_handler(Exception)
+async def unhandled_api_exception(request, exc):
+    logger.exception("Unhandled API exception")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Unable to process your request. Please try again later."},
+    )
 
 class QueryRequest(BaseModel):
-    game_name: str
-    query: str
+    game_name: RequiredText
+    query: RequiredText
 
 class QueryResponse(BaseModel):
     game: str
@@ -42,7 +53,7 @@ class QueryResponse(BaseModel):
 
 
 class ConversationCreateRequest(BaseModel):
-    game_name: str
+    game_name: RequiredText
     title: str | None = None
 
 
@@ -63,8 +74,8 @@ class MessageResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    game_name: str
-    message: str
+    game_name: RequiredText
+    message: RequiredText
     conversation_id: str | None = None
 
 
@@ -103,9 +114,9 @@ def ask_question(request: QueryRequest):
             result=result,
             timestamp=datetime.now().isoformat()
         )
-    except Exception as e:
-        logger.error(f"Error processing query: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error processing query")
+        raise HTTPException(status_code=500, detail="Unable to process your request. Please try again later.") from None
 
 
 @app.post("/conversations", response_model=ConversationResponse)
@@ -168,9 +179,9 @@ def chat(request: ChatRequest):
             answer=answer,
             timestamp=datetime.now().isoformat(),
         )
-    except Exception as e:
-        logger.error(f"Error processing chat: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error processing chat")
+        raise HTTPException(status_code=500, detail="Unable to process your request. Please try again later.") from None
 
 
 

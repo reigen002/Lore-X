@@ -6,16 +6,16 @@ Core backend service that powers the game assistant sidebar widget. Handles inte
 
 ## ✨ Key Features
 
-*   **FastAPI REST API**: 7 endpoints for chat, conversations, and widget serving
+*   **FastAPI REST API**: Six domain operations, plus health and widget routes
 *   **🧠 Intelligent Query Routing**:
-  *   **Default (Normal)**: Full CrewAI crew with Groq LLM for formatted responses
-    *   **Fallback (Rate Limited)**: Direct search on 429 errors - no LLM calls
-    *   **Auto-Detection**: Catches rate limits and switches automatically
+  *   **HTTP path**: Retrieve cached/web snippets, then invoke Groq formatting
+    *   **Formatting failure**: Return raw snippets with the existing HTTP 200 response
+    *   **CLI path**: Separate CrewAI agent workflow
 *   **Hybrid Search Engine**:
     *   **ChromaDB RAG**: Semantic search on cached game data (instant, free)
     *   **Web Search**: Serper API + DuckDuckGo for non-cached queries
     *   **Auto-Indexing**: Web results automatically cached for future queries
-    *   **Strict Relevance**: 0.45 distance threshold prevents false positives
+    *   **Relevance Filter**: 0.45 distance threshold; factual accuracy is not established by this setting
 *   **Persistent Conversations**:
     *   SQLite database with game-level separation
     *   Message history with timestamps
@@ -29,15 +29,15 @@ Core backend service that powers the game assistant sidebar widget. Handles inte
 ### Prerequisites
 | Component | Version |
 |-----------|---------|
-| **Python** | 3.10+ |
+| **Python** | 3.10–3.13 |
 | **Groq API Key** | [Get here](https://console.groq.com/keys) |
 | **Serper API Key** | [Get here](https://serper.dev/) |
 
 ### Installation
 
-1. **Install dependencies** (in this directory)
+1. **Install dependencies from the repository root** (where the package metadata lives)
    ```bash
-   pip install -e .
+   python -m pip install -e .
    ```
 
 2. **Configure API keys** (create `.env` in project root)
@@ -49,19 +49,17 @@ Core backend service that powers the game assistant sidebar widget. Handles inte
 
 ### Run Backend
 
-```bash
-# Option 1: Start API server (recommended for widget)
-python main.py api
+From the repository root in the activated environment:
 
-# Option 2: Interactive CLI
-python main.py
+~~~powershell
+python -m uvicorn rpgagents.api:app --app-dir backend/rpgagents/src --env-file .env --host 127.0.0.1 --port 8000
+~~~
 
-# Option 3: Direct with uvicorn
-uvicorn src.rpgagents.api:app --host 127.0.0.1 --port 8000
-```
+Create the root .env first. A configured CHROMA_DB_PATH remains relative to the launch directory in this main-based implementation; no shared-path migration is included. The interactive CrewAI CLI can be launched with python -m rpgagents.main after installation.
 
-✅ API running on: **http://127.0.0.1:8000**  
-📖 OpenAPI docs: **http://127.0.0.1:8000/docs**
+API documentation: http://127.0.0.1:8000/docs. The current widget asset is absent, so GET /widget returns 404; serve the separate frontend directory for the sidebar.
+
+See [main backend reliability](../../docs/MAIN_BACKEND_RELIABILITY.md) for the tested request/failure contract and offline commands. There is no MCP server or console entry point on this baseline.
 
 ## 📡 API Endpoints
 
@@ -104,80 +102,18 @@ Fetch all messages in conversation
 ### Widget
 ```
 GET /widget
-Serves embeddable HTML sidebar UI
+Currently returns 404 because the expected static asset is absent
 ```
 
 ## 🧠 Query Processing Pipeline
 
-### Flow Diagram
-```
-POST /chat
-    ↓
-quick_search(game_name, query)
-    ├─ Try: crew_search() [Full LLM Crew]
-    │   ├─ Researcher Agent → GameSearchTool
-    │   │   ├─ ChromaDB Search (distance < 0.45?)
-    │   │   └─ Web Search (Serper + DuckDuckGo) if no cache
-    │   │   └─ Auto-Index results into ChromaDB ✅
-    │   └─ Game Expert Agent → Format to 1-3 sentences
-    │
-    └─ Catch 429/429 RESOURCE_EXHAUSTED Error
-       └─ Fallback: direct_search() [No LLM]
-           └─ GameSearchTool only → Return raw results
-    
-    ↓
-ConversationStore.add_message()
-    ├─ Store user message
-    └─ Store assistant response
-    
-    ↓
-Response to client
-    └─ conversation_id, answer, timestamp
-```
+POST /chat validates required text, creates or reuses a conversation, and commits the user message. quick_search invokes rag_then_format: GameSearchTool retrieves cached snippets or performs its existing web fallback, then Groq formats the retrieved text. Formatting exceptions return raw snippets. An escaping retrieval/initialization failure invokes direct search; its errors now return safe text. The assistant string is committed separately.
 
-### Search Strategy
+POST /ask uses the same answer path without conversation writes. Neither endpoint has a typed outcome discriminator: handled no-information and search-failure strings can still use HTTP 200. Unexpected API exceptions use safe HTTP 500 JSON and server tracebacks.
 
-**Scenario 1: First Query (No Cache)**
-```
-Query: "best Valorant agent for beginners?"
-  ↓
-crew_search() with Groq LLM
-  ├─ Researcher searches ChromaDB → not found
-  └─ Fallback to web search
-     └─ Serper API returns 10 results
-        └─ Results indexed in ChromaDB ✅
-  ↓
-Game Expert formats: "Phoenix, Sage, Brimstone..."
-  ↓
-Response sent + stored in SQLite
-```
+Retrying an existing conversation appends another user message and, on success, an assistant message. A generation exception can leave the first user message committed. No idempotency or whole-turn atomicity is implemented. The connection-lifetime fix preserves these separate commits.
 
-**Scenario 2: Cached Query**
-```
-Query: "Valorant agents for new players?"
-  ↓
-crew_search() with Groq LLM
-  ├─ Researcher searches ChromaDB → FOUND! ✅
-  │  (distance 0.36 < 0.45 threshold)
-  └─ No web search needed
-  ↓
-Game Expert formats cached results
-  ↓
-Response sent instantly ⚡ (0 API calls)
-```
-
-**Scenario 3: Rate Limit Hit**
-```
-Query: "Elden Ring build?"
-  ↓
-crew_search() attempts → Groq rate limit exceeded ❌
-  └─ Catches "429" or "RESOURCE_EXHAUSTED"
-  ↓
-Fallback: direct_search() [no LLM]
-  └─ Returns raw search results
-  ↓
-Response continues working ✅ (graceful degradation)
-```
+The existing distance threshold and indexing behavior are unchanged. This patch adds no BM25/vector fusion, expanded context, corrective web rounds, provider admission logic or evidence assessment.
 
 ## 🏗️ Architecture
 
@@ -185,7 +121,7 @@ Response continues working ✅ (graceful degradation)
 ```
 src/rpgagents/
 ├── main.py                    # Entry point, CLI, API startup
-├── api.py                     # FastAPI app, 7 endpoints
+├── api.py                     # Six domain operations plus health/widget
 ├── crew.py                    # CrewAI agents definition
 ├── conversation_store.py      # SQLite conversation storage
 │
@@ -205,26 +141,27 @@ src/rpgagents/
 CREATE TABLE conversations (
     id TEXT PRIMARY KEY,
     game_name TEXT NOT NULL,
-    title TEXT,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-)
-CREATE INDEX idx_game_name ON conversations(game_name)
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_conversations_game ON conversations(game_name);
 ```
 
 #### messages table
 ```sql
 CREATE TABLE messages (
     id TEXT PRIMARY KEY,
-    conversation_id TEXT FOREIGN KEY,
-    role TEXT,  -- 'user' or 'assistant'
-    content TEXT,
-    created_at TIMESTAMP
-)
-CREATE INDEX idx_conversation ON messages(conversation_id)
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,  -- 'user' or 'assistant'
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+);
+CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at);
 ```
 
-Location: `knowledge/conversations.sqlite3`
+Location: <repository root>/backend/knowledge/conversations.sqlite3. Game names are metadata and filters; existing conversation IDs are not checked against the request game.
 
 ### ChromaDB Structure
 
@@ -237,7 +174,7 @@ Location: `knowledge/conversations.sqlite3`
 - etc.
 
 **Documents**: Web search results, indexed automatically
-- **Metadata**: game_name, source URL, timestamp
+- **Metadata**: game_id and source
 - **Embedding**: Sentence Transformers (all-MiniLM-L6-v2)
 - **Distance Threshold**: 0.45 (strict relevance filter)
 
@@ -246,57 +183,28 @@ Location: `knowledge/conversations.sqlite3`
 ### Relevance Threshold (RAG)
 **File**: [tools/game_search_tool.py](src/rpgagents/tools/game_search_tool.py#L86)
 **Current**: `0.45`
-- Distance < 0.45 = confidence > 0.55 (return result)
-- Distance > 0.45 = trigger web search
+- Cached snippets below this distance are eligible for return; no eligible snippets trigger web fallback.
+- The displayed distance-derived percentage is not a calibrated probability of factual correctness.
 
-### Response Format
-**File**: [config/tasks.yaml](src/rpgagents/config/tasks.yaml)
-**Current**: 1-3 sentences maximum
-- Direct answer
-- Key details/tips
-- Source URL if available
+### Response Format and LLM Settings
 
-### LLM Settings
-**File**: [crew.py](src/rpgagents/crew.py)
-**Temperature**: 0.3 (more deterministic, less creative)
-**Model**: `groq/llama-3.1-70b-versatile`
-**Max Tokens**: None (default)
+The HTTP path requests a 2–4 sentence answer from Groq qwen/qwen3.6-27b at temperature 0.2 with max_tokens=2048. Formatting failures preserve raw snippets. The separate CrewAI CLI uses its task configuration and a Groq LLM at temperature 0.3. Provider/model configuration is unchanged by this reliability patch.
 
 ### Web Search
 **Primary**: Serper API (google.serper.dev)
 **Fallback**: DuckDuckGo (ddgs package)
 **Filters**:
 - Language: English only
-- Domains: Gaming wikis only (fandom.com, fextralife.com, ign.com, etc.)
+- Domains: Prefer trusted gaming wikis; other unblocked results may also be included
 - Blocks: Non-English sites (baidu.com, qq.com, etc.)
 
 ## 🔄 Error Handling
 
-### Rate Limit (429)
-**Behavior**:
-- Detects `"429"` or `"RESOURCE_EXHAUSTED"` in error
-- Automatically falls back to direct_search()
-- No LLM formatting (returns raw results)
-- System continues working ✅
+Required game_name, query and message fields are trimmed and must contain at least one character. Missing, incompatible or blank required text returns 422 before search/provider calls or database writes. Optional titles, filters and IDs retain their previous contract.
 
-**Example Log**:
-```
-[INFO] Rate limit detected. Fallback: direct_search()
-[INFO] Returning results without LLM formatting
-```
+HTTP 200 can contain formatted text, raw snippet fallback, no-information text or safe handled search-error text. Formatting exceptions, including rate limits, return raw snippets and log a traceback. Unexpected /ask, /chat and CRUD exceptions produce safe HTTP 500 JSON; diagnostic details remain server-side. Unknown conversation reads still return 404; an unknown ID supplied to /chat creates a new conversation.
 
-### No Results
-**Behavior**:
-1. ChromaDB search → No matches above threshold
-2. Falls back to web search
-3. Caches new results
-4. Retries with cache on future queries
-
-### Network Errors
-**Behavior**:
-- Serper API down → Falls back to DuckDuckGo
-- DuckDuckGo also down → Returns cached results only
-- Returns error message to client if no fallback available
+Each message commits separately. Retries append; partial turns remain possible. The connection context closes SQLite handles after success or failure without making a whole turn atomic. There is no MCP interface on this main-based checkout.
 
 ## 📊 Technologies
 
@@ -308,7 +216,7 @@ Location: `knowledge/conversations.sqlite3`
 | **Embeddings** | Sentence Transformers | Vector generation |
 | **Search** | Serper API + DuckDuckGo | Web search |
 | **Web Scraping** | BeautifulSoup4 | Extract search results |
-| **LLM** | Groq Llama 3.1 70B Versatile | Response formatting |
+| **LLM** | Groq qwen/qwen3.6-27b | Response formatting |
 | **Agents** | CrewAI | Multi-agent orchestration |
 | **Database** | SQLite | Message storage |
 | **Task Queue** | Optional: Celery/Redis | Async processing |
@@ -323,18 +231,23 @@ curl -X POST http://127.0.0.1:8000/chat \
 ```
 
 ### Test Caching
-1. Query 1: "Valorant agent tips" → uses web search
-2. Query 2: Same query again → should be instant (cached)
-3. Check logs for `"Local Source"` vs `"Web Index"`
+This is an optional live observation, outside the offline reliability suite. With a previously unindexed game, inspect the web-search and indexing logs on the first query. Repeat the query and inspect whether eligible cached snippets were returned. A repeat query can still search again if cached snippets fail the distance filter; no hit rate or speedup is claimed.
 
-### Test Rate Limit Fallback
-1. Make enough queries to hit your Groq rate limit
-2. Next query should return results (no error)
-3. Check logs for `"Fallback: direct_search()"`
+### Offline Reliability Tests
+
+From the repository root in the activated environment:
+
+~~~powershell
+python -m unittest discover -s backend/rpgagents/tests -p 'test_api_reliability.py'
+python -m unittest discover -s backend/rpgagents/tests -p 'test_conversation_store.py'
+python -m unittest discover -s backend/rpgagents/tests -p 'test_*.py'
+~~~
+
+Tests use temporary SQLite, mocked external calls, and guards against normal Chroma access and model downloads. They assert client responses, diagnostic tracebacks and committed state; invalid-input tests also inspect SQL traces for attempted writes. No live quota exhaustion is needed. Main had no pre-existing automated suite; these tests do not import develop's evaluator or its live tests.
 
 ### Check Database
 ```bash
-sqlite3 knowledge/conversations.sqlite3
+sqlite3 -readonly backend/knowledge/conversations.sqlite3
 sqlite> SELECT * FROM conversations;
 sqlite> SELECT * FROM messages;
 ```

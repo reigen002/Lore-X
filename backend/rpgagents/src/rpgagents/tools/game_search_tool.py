@@ -214,11 +214,9 @@ class GameSearchTool(BaseTool):
                 f"{bullets}"
             )
 
-        except Exception as e:
-            logger.error(f"Local search error: {e}")
-            import traceback
-            traceback.print_exc()
-            return f"Error searching local docs: {str(e)}. Use 'Web Search for Game Information' instead."
+        except Exception:
+            logger.exception("Local search failed")
+            return "Error searching local docs. Please try again later."
 
     def _ingest_local_files(self, game_id: str):
         """Scan data/raw/{game_id} for .txt files and ingest them."""

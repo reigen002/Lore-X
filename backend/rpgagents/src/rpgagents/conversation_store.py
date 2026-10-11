@@ -1,7 +1,8 @@
 import os
 import sqlite3
+from contextlib import closing, contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 
@@ -19,10 +20,13 @@ class ConversationStore:
         self.db_path = db_path
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3's transaction context commits/rolls back but does not close.
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                yield conn
 
     def _initialize(self) -> None:
         with self._connect() as conn:
