@@ -13,11 +13,11 @@ The **RPG Gaming Assistant** is a full-stack application with a resizable, toggl
     *   **Web Fallback**: Serper API + DuckDuckGo for non-cached queries
     *   **Auto-Caching**: Web results automatically indexed for future queries
 *   **⚡ Smart LLM Switching**:
-    *   **Primary**: Groq llama-3.1-70b-versatile for formatted, concise responses (1-3 sentences)
-    *   **Fallback**: Direct search (no LLM) if rate limit (429) is hit
-    *   **Auto-Recovery**: Seamlessly switches without user intervention
+    *   **Primary**: Groq qwen/qwen3.6-27b formats retrieved snippets
+    *   **Fallback**: Raw retrieved snippets if formatting fails, including rate limits
+    *   **Failure Contract**: Handled failures can remain HTTP 200 strings; see the contract below
 *   **🔍 RAG Pipeline**:
-    *   Semantic search with strict 0.45 distance threshold (high precision)
+    *   Semantic search with a 0.45 distance threshold; this does not establish factual accuracy
     *   Automatic web indexing on first query
     *   Self-healing system that caches successful results
 
@@ -27,7 +27,7 @@ The **RPG Gaming Assistant** is a full-stack application with a resizable, toggl
 
 | Component | Requirement |
 |-----------|------------|
-| **Python** | 3.10+ |
+| **Python** | 3.10–3.13 |
 | **Groq API Key** | [Get here](https://console.groq.com/keys) |
 | **Serper API Key** | [Get here](https://serper.dev/) |
 
@@ -36,7 +36,7 @@ The **RPG Gaming Assistant** is a full-stack application with a resizable, toggl
 1. **Clone repository**
    ```bash
    git clone <your-repo>
-   cd ai_gamming_assistant
+   cd Lore-X
    ```
 
 2. **Create virtual environment**
@@ -48,8 +48,8 @@ The **RPG Gaming Assistant** is a full-stack application with a resizable, toggl
 
 3. **Install dependencies**
    ```bash
-   cd backend/rpgagents
-   pip install -e .
+   # Run from the repository root, where pyproject.toml lives
+   python -m pip install -e .
    ```
 
 4. **Configure API keys** (create `.env` in project root)
@@ -63,8 +63,7 @@ The **RPG Gaming Assistant** is a full-stack application with a resizable, toggl
 
 ### **Terminal 1: Start Backend API**
 ```bash
-cd backend/rpgagents
-python main.py api
+python -m uvicorn rpgagents.api:app --app-dir backend/rpgagents/src --env-file .env --host 127.0.0.1 --port 8000
 ```
 ✅ Backend: **http://127.0.0.1:8000**  
 📖 API Docs: **http://127.0.0.1:8000/docs**
@@ -80,7 +79,15 @@ python -m http.server 3000
 1. Open browser to `http://localhost:3000`
 2. Enter game name (e.g., "Valorant", "Elden Ring")
 3. Type your question
-4. Get instant responses from cached data or web search
+4. Read the formatted answer, raw snippets, or failure text returned by the backend
+
+## Backend request and failure contract
+
+Required game names, questions and messages are trimmed and must be nonblank. Invalid required text returns HTTP 422 before search, provider calls or writes. Existing string response fields are preserved: HTTP 200 can carry a formatted answer, raw snippets, no-information text or a handled safe search-failure message. Unexpected API errors return HTTP 500 with generic detail while server logs retain diagnostic tracebacks.
+
+Chat commits the user message before generation and the assistant message afterward. Failures can leave partial turns, and retries append messages. There is no idempotency or whole-turn-atomicity guarantee. The SQLite connection fix closes each operation's connection; it does not change this persistence contract.
+
+This main-based checkout has no MCP server or entry point. No unmerged retrieval/provider implementation was imported. See [main backend reliability](docs/MAIN_BACKEND_RELIABILITY.md) for current behavior, offline commands, setup limits and the SQLite regression.
 
 ## 🏗️ Architecture
 
@@ -95,12 +102,9 @@ python -m http.server 3000
 │      Backend (Port 8000 - FastAPI)               │
 ├──────────────────────────────────────────────────┤
 │                                                   │
-│  ┌─ Try CrewAI Crew (with LLM)                   │
-│  │   ├─ Researcher Agent                         │
-│  │  └─ Game Expert Agent (formats)               │
-│  │                                                │
-│  │  On 429 Rate Limit:                           │
-│  └─ Fallback to Direct Search (no LLM)           │
+│   Retrieve cached snippets or search the web      │
+│   Groq formats the retrieved snippets             │
+│   Formatting failure returns raw snippets         │
 │       ↓                                           │
 │   GameSearchTool                                  │
 │   ├─ ChromaDB (cached)     [Fast ⚡]             │
@@ -111,7 +115,7 @@ python -m http.server 3000
 │   Response + ID                                  │
 └──────────────────────────────────────────────────┘
                  ↑
-      ← JSON Response (streaming)
+      ← JSON Response
                  │
         ┌────────┴──────────┐
         ↓                   ↓
@@ -132,32 +136,27 @@ python -m http.server 3000
 ## ⚙️ Configuration
 
 ### Relevance Threshold (ChromaDB Distance)
-**Current**: `0.45` (very strict, high precision)
-- Distance < 0.45 = confidence > 0.55 (return result)
-- Distance > 0.45 = trigger web search
+**Current**: `0.45`
+- Cached snippets below this distance are eligible for return; no eligible snippets trigger web fallback.
+- The displayed distance-derived percentage is not a calibrated probability of factual correctness.
 
 Adjust in: [src/rpgagents/tools/game_search_tool.py](backend/rpgagents/src/rpgagents/tools/game_search_tool.py#L86)
 
 ### Response Format
-File: [config/tasks.yaml](backend/rpgagents/src/rpgagents/config/tasks.yaml)
-
-Default: **1-3 sentences maximum**
-- Direct answer first
-- Key details/tips
-- Source URL
+The HTTP formatter requests 2–4 sentences and a source URL when present. Raw-snippet and failure-string fallbacks keep their existing formats. See [main.py](backend/rpgagents/src/rpgagents/main.py).
 
 ### LLM Temperature
-**Current**: `0.3` (more deterministic)
-
-Adjust in: [crew.py](backend/rpgagents/src/rpgagents/crew.py) - Controls creativity/randomness
+The HTTP formatter uses temperature 0.2. The separate CrewAI CLI uses temperature 0.3 in [crew.py](backend/rpgagents/src/rpgagents/crew.py).
 
 ## 📂 Project Structure
 
 ```
-ai_gamming_assistant/
+Lore-X/
 ├── README.md (this file)
 ├── .env (API keys configuration)
 ├── .venv/ (Python virtual environment)
+├── pyproject.toml (package metadata and dependencies)
+├── chroma_db/ (default cache when launched from the repository root)
 │
 ├── frontend/
 │   ├── index.html          (sidebar UI)
@@ -166,15 +165,9 @@ ai_gamming_assistant/
 │   └── README.md           (frontend docs)
 │
 └── backend/
+    ├── knowledge/conversations.sqlite3 (message history)
     └── rpgagents/
         ├── README.md       (backend-specific docs)
-        ├── pyproject.toml  (dependencies)
-        │
-        ├── chroma_db/                     (ChromaDB cache)
-        │   └── [game collections]
-        │
-        ├── knowledge/
-        │   └── conversations.sqlite3      (message history)
         │
         ├── output/                        (generated guides)
         │

@@ -26,8 +26,9 @@ def direct_search(game_name: str, query: str) -> str:
     try:
         tool = GameSearchTool()
         return tool._run(game_name=game_name, query=query)
-    except Exception as e:
-        return f"Search error: {str(e)}"
+    except Exception:
+        logger.exception("Direct search failed")
+        return "Search temporarily unavailable. Please try again later."
 
 
 def run():
@@ -162,8 +163,8 @@ def rag_then_format(game_name: str, query: str) -> str:
         logger.info(f"✅ LLM formatted answer ({len(formatted)} chars)")
         return formatted
 
-    except Exception as e:
-        logger.warning(f"⚠️ LLM formatting failed ({e}), returning raw snippets")
+    except Exception:
+        logger.exception("LLM formatting failed; returning raw snippets")
         return raw_snippets
 
 
@@ -193,8 +194,8 @@ def quick_search(game_name: str, query: str):
     """
     try:
         return rag_then_format(game_name, query)
-    except Exception as e:
-        logger.warning(f"rag_then_format failed ({e}), falling back to direct search")
+    except Exception:
+        logger.exception("rag_then_format failed; falling back to direct search")
         return direct_search(game_name, query)
 
 
